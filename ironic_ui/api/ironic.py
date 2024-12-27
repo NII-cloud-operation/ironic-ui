@@ -20,6 +20,11 @@ from django.conf import settings
 from ironicclient import client
 from ironicclient.v1 import resource_fields as res_fields
 
+from keystoneauth1.exceptions import Forbidden
+from keystoneauth1.exceptions import Unauthorized
+from keystoneauth1.identity import v3
+from keystoneauth1 import session
+
 from horizon.utils.memoized import memoized  # noqa
 
 from openstack_dashboard.api import base
@@ -48,6 +53,38 @@ def ironicclient(request):
                              token=request.user.token.id,
                              insecure=insecure,
                              cacert=cacert)
+
+
+@memoized
+def system_scoped_ironicclient(request):
+    """Returns a client connected to the Ironic backend.
+
+    :param request: HTTP request.
+    :return: Ironic client.
+    """
+    insecure = getattr(settings, 'OPENSTACK_SSL_NO_VERIFY', DEFAULT_INSECURE)
+    cacert = getattr(settings, 'OPENSTACK_SSL_CACERT', DEFAULT_CACERT)
+    ironic_url = base.url_for(request, IRONIC_CLIENT_CLASS_NAME)
+
+    auth_url = settings.OPENSTACK_KEYSTONE_URL
+    system_scoped_auth = v3.Token(
+        auth_url=auth_url,
+        token=request.user.token.id,
+        system_scope="all"
+    )
+    try:
+        system_scoped_sess = session.Session(auth=system_scoped_auth)
+        system_scoped_token = system_scoped_auth.get_token(system_scoped_sess)
+
+        return client.get_client(
+            1,
+            endpoint=ironic_url,
+            os_ironic_api_version=DEFAULT_IRONIC_API_VERSION,
+            token=system_scoped_token,
+            insecure=insecure,
+            cacert=cacert)
+    except Unauthorized as e:
+        raise Forbidden from e
 
 
 def node_list(request):
@@ -278,7 +315,7 @@ def driver_list(request):
 
     http://docs.openstack.org/developer/python-ironicclient/api/ironicclient.v1.driver.html#ironicclient.v1.driver.DriverManager.list
     """
-    return ironicclient(request).driver.list()
+    return system_scoped_ironicclient(request).driver.list()
 
 
 def driver_properties(request, driver_name):
@@ -290,7 +327,7 @@ def driver_properties(request, driver_name):
 
     http://docs.openstack.org/developer/python-ironicclient/api/ironicclient.v1.driver.html#ironicclient.v1.driver.DriverManager.properties
     """
-    return ironicclient(request).driver.properties(driver_name)
+    return system_scoped_ironicclient(request).driver.properties(driver_name)
 
 
 def driver_details(request, driver_name):
@@ -302,7 +339,7 @@ def driver_details(request, driver_name):
 
     https://docs.openstack.org/python-ironicclient/latest/cli/osc/v1/index.html#baremetal-driver-show
     """
-    details = ironicclient(request).driver.get(driver_name)
+    details = system_scoped_ironicclient(request).driver.get(driver_name)
     return details.to_dict()
 
 
